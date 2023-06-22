@@ -332,7 +332,7 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
     # init optimizer and scheduler
     optimizer = optim.Adam(model.parameters(), **config['Adam'])
     if config['lr_scheduler_name']=='ReduceLROnPlateau':
-            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, **config['lr_scheduler']['ReduceLROnPlateau'])
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, **config['lr_scheduler']['ReduceLROnPlateau'])
     elif config['lr_scheduler_name']=='CosineAnnealingLR':
         scheduler = CosineLR(optimizer, **config['lr_scheduler']['CosineAnnealingLR'])
         print(scheduler.get_lr())
@@ -454,11 +454,41 @@ if __name__ == "__main__":
         print(f"Shape After Removing Outliers: {df.shape}, {val_df_contrail.shape}" )
 
         
-    for fold in [0,1,2,3,4]: # [0, 1, 2, 3, 4]
+    for fold in [0]: # [0, 1, 2, 3, 4]
         cfg.dataset.fold = fold
         train_df = df.loc[df.fold != fold].reset_index(drop=True)
         val_df = df.loc[df.fold == fold].reset_index(drop=True)
         print(df.shape, train_df.shape, val_df.shape)
+        
+        
+        if hasattr(cfg.training, 'use_pl') and cfg.training.use_pl:
+            
+            df_tr_s1_3 = pd.read_csv(f'../input/pseudo/train_data_3.csv') # s1
+            df_tr_s1_5 = pd.read_csv(f'../input/pseudo/train_data_5.csv') # s1
+
+            df_tr_s1_3 = df_tr_s1_3.loc[df_tr_s1_3.fold != fold].reset_index(drop=True)
+            df_tr_s1_5 = df_tr_s1_5.loc[df_tr_s1_5.fold != fold].reset_index(drop=True)
+
+            df_tr_s1_3['label'] = df_tr_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
+            df_tr_s1_5['label'] = df_tr_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
+
+            
+            df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_3.csv') # s1
+            df_val_s1_5 = pd.read_csv(f'../input/pseudo/validation_data_5.csv') # s1
+
+            df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
+            df_val_s1_5['label'] = df_val_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
+
+
+
+            train_df = pd.concat([
+                train_df, df_tr_s1_3, df_val_s1_5, df_val_s1_3, df_val_s1_5
+            ]).reset_index(drop=True) 
+ 
+        
+        print(train_df.shape)
+        print(train_df['class'].value_counts())
+        
         _ = train_loop(train_df, val_df, val_df_contrail, cfg, config)
     
     

@@ -1,6 +1,6 @@
 dataset_class: contrail_dataset
 model_class: contrail_model 
-exp_name: ../output/exp_03_s2
+exp_name: ../output/exp_01_s2
 # model_type: 'timm_unet'
 debug: false
 architecture:
@@ -9,7 +9,7 @@ architecture:
     pretrained: true
     mixout: 0.0
     default_weight: 'imagenet'
-    pretrained_weights: "/home/rohits/pv1/contrail/output/exp_03/Unet/efficientnet-b7-256"
+    pretrained_weights: "/home/rohits/pv1/Contrail_Detection/output/exp_01/Unet/efficientnet-b7-256"
     pool: Mean 
 dataset:
     fold: -1
