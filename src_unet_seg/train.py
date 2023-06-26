@@ -454,7 +454,7 @@ if __name__ == "__main__":
         print(f"Shape After Removing Outliers: {df.shape}, {val_df_contrail.shape}" )
 
         
-    for fold in [0]: # [0, 1, 2, 3, 4]
+    for fold in [3]: # [0, 1, 2, 3, 4]
         cfg.dataset.fold = fold
         train_df = df.loc[df.fold != fold].reset_index(drop=True)
         val_df = df.loc[df.fold == fold].reset_index(drop=True)
@@ -463,29 +463,46 @@ if __name__ == "__main__":
         
         if hasattr(cfg.training, 'use_pl') and cfg.training.use_pl:
             
-            df_tr_s1_3 = pd.read_csv(f'../input/pseudo/train_data_3.csv') # s1
-            df_tr_s1_5 = pd.read_csv(f'../input/pseudo/train_data_5.csv') # s1
+            # df_tr_s1_3 = pd.read_csv(f'../input/pseudo/train_data_3.csv') # s1
+            # df_tr_s1_5 = pd.read_csv(f'../input/pseudo/train_data_5.csv') # s1
 
-            df_tr_s1_3 = df_tr_s1_3.loc[df_tr_s1_3.fold != fold].reset_index(drop=True)
-            df_tr_s1_5 = df_tr_s1_5.loc[df_tr_s1_5.fold != fold].reset_index(drop=True)
+            # df_tr_s1_3 = df_tr_s1_3.loc[df_tr_s1_3.fold != fold].reset_index(drop=True)
+            # df_tr_s1_5 = df_tr_s1_5.loc[df_tr_s1_5.fold != fold].reset_index(drop=True)
 
-            df_tr_s1_3['label'] = df_tr_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
-            df_tr_s1_5['label'] = df_tr_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
+            # df_tr_s1_3['label'] = df_tr_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
+            # df_tr_s1_5['label'] = df_tr_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
 
             
+            # df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_3.csv') # s1
+            # df_val_s1_5 = pd.read_csv(f'../input/pseudo/validation_data_5.csv') # s1
+
+            # df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
+            # df_val_s1_5['label'] = df_val_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
+
+            # train_df = pd.concat([
+            #     train_df, df_tr_s1_3, df_val_s1_5, df_val_s1_3, df_val_s1_5
+            # ]).reset_index(drop=True) 
+ 
+             
+            df_val_s1_2 = pd.read_csv(f'../input/pseudo/validation_data_2.csv') # s1
             df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_3.csv') # s1
             df_val_s1_5 = pd.read_csv(f'../input/pseudo/validation_data_5.csv') # s1
+            df_val_s1_6 = pd.read_csv(f'../input/pseudo/validation_data_6.csv') # s1
+            
+            
 
-            df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
-            df_val_s1_5['label'] = df_val_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
-
-
+            df_val_s1_2['label'] = df_val_s1_2['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
+            df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
+            df_val_s1_5['label'] = df_val_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
+            df_val_s1_6['label'] = df_val_s1_6['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
+            
+            
 
             train_df = pd.concat([
-                train_df, df_tr_s1_3, df_val_s1_5, df_val_s1_3, df_val_s1_5
+                train_df, df_val_s1_2, df_val_s1_3, df_val_s1_5, df_val_s1_6
             ]).reset_index(drop=True) 
  
-        
+ 
         print(train_df.shape)
         print(train_df['class'].value_counts())
         

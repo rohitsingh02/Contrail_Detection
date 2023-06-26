@@ -1,6 +1,6 @@
 dataset_class: contrail_dataset
 model_class: contrail_model 
-exp_name: ../output/exp_01_s2
+exp_name: ../output/exp_01_pl_687lb_s2
 # model_type: 'timm_unet'
 debug: false
 architecture:
@@ -9,7 +9,7 @@ architecture:
     pretrained: true
     mixout: 0.0
     default_weight: 'imagenet'
-    pretrained_weights: "/home/rohits/pv1/Contrail_Detection/output/exp_01/Unet/efficientnet-b7-256"
+    pretrained_weights: "/home/rohits/pv1/Contrail_Detection/output/exp_01_pl_687lb/Unet/efficientnet-b7-256"
     pool: Mean 
 dataset:
     fold: -1
@@ -30,7 +30,7 @@ environment:
     num_workers: 4
     seed: 42
 training:
-    use_pl: false
+    use_pl: true
     ntb: 3
     replace_label: false
     # loss: "bce+mixed_loss" # bce , bce+mixed_loss, bce+lovastz, bce+tversky, dice
@@ -38,7 +38,7 @@ training:
     augs_train: "train_1"
     augs_val: "valid_2"
     fp16: true
-    epochs: 50
+    epochs: 15
     save_best: true
     batch_size: 112 #86
     grad_accumulation: 1
