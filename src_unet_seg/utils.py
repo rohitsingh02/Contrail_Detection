@@ -97,3 +97,17 @@ def get_non_empty_masks(df, pos_ids):
     df['id'] = df['image'].apply(lambda x: x.split('/')[-2])
     df = df.loc[df['id'].isin(pos_ids)].reset_index(drop=True)
     return df
+
+
+def freeze_encoder(model):
+    for child in model.encoder.children():
+        for param in child.parameters():
+            param.requires_grad = False
+    return
+
+
+def unfreeze(model):
+    for child in model.children():
+        for param in child.parameters():
+            param.requires_grad = True
+    return

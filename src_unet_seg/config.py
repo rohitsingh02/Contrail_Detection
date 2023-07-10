@@ -11,8 +11,6 @@ def get_config():
             'efficientnet-b7-256': 96,
             'efficientnet-b7-384': 42,
             'efficientnet-b7-512': 24,
-            
-            
             'timm-efficientnet-b8-256': 68,
             'timm-efficientnet-l2-256': 18
               

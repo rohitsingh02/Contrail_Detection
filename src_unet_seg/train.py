@@ -48,6 +48,48 @@ sys.path.append("models")
 sys.path.append("datasets")
 
 
+def mixup(input, truth, clip=[0, 1]):
+    indices = torch.randperm(input.size(0))
+    shuffled_input = input[indices]
+    shuffled_labels = truth[indices]
+
+    lam = np.random.uniform(clip[0], clip[1])
+    input = input * lam + shuffled_input * (1 - lam)
+    return input, truth, shuffled_labels, lam
+
+def rand_bbox(size, lam):
+    W = size[2]
+    H = size[3]
+    cut_rat = np.sqrt(1. - lam)
+    cut_w = np.int_(W * cut_rat)
+    cut_h = np.int_(H * cut_rat)
+
+    # uniform
+    cx = np.random.randint(W)
+    cy = np.random.randint(H)
+
+    bbx1 = np.clip(cx - cut_w // 2, 0, W)
+    bby1 = np.clip(cy - cut_h // 2, 0, H)
+    bbx2 = np.clip(cx + cut_w // 2, 0, W)
+    bby2 = np.clip(cy + cut_h // 2, 0, H)
+    return bbx1, bby1, bbx2, bby2
+
+def cutmix(data, target, alpha=1.):
+    indices = torch.randperm(data.size(0))
+    shuffled_data = data[indices]
+    shuffled_target = target[indices]
+
+    lam = np.clip(np.random.beta(alpha, alpha),0.3,0.4)
+    bbx1, bby1, bbx2, bby2 = rand_bbox(data.size(), lam)
+    new_data = data.clone()
+    new_data[:, :, bby1:bby2, bbx1:bbx2] = data[indices, :, bby1:bby2, bbx1:bbx2]
+    # adjust lambda to exactly match pixel ratio
+    lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (data.size()[-1] * data.size()[-2]))
+    targets = (target, shuffled_target, lam)
+
+    return new_data,target,shuffled_target,lam
+
+
 # =========================================================================================
 # get model
 # ========================================================================================= 
@@ -55,7 +97,7 @@ def get_model(cfg):
     # if cfg.architecture.backbone == "se_resnext101_32x4d":
     #     Net = importlib.import_module(cfg.model_class).UNET_SERESNEXT101
     if hasattr(cfg, "model_type") and cfg.model_type == "timm_unet":
-        Net = importlib.import_module(cfg.model_class).Timm_Unet
+        Net = importlib.import_module(cfg.model_class).TimmSegModel
     else:
         Net = importlib.import_module(cfg.model_class).Net
         
@@ -66,7 +108,7 @@ def load_checkpoint(cfg, model):
     weight = f"{cfg.architecture.pretrained_weights}"
     
     if cfg.dataset.fold != -1:
-       weight += f"/checkpoint_dice_fold{cfg.dataset.fold}.pth" 
+       weight += f"/checkpoint_dice_ctrl_fold{cfg.dataset.fold}.pth" 
     
     d =  torch.load(weight, map_location="cpu")
     if "model" in d:
@@ -99,6 +141,21 @@ def train_one_epoch(cfg, config, model, optimizer, scheduler, criterion, dataloa
         masks  = masks.to(cfg.device, dtype=torch.float)
         labels_cls = labels_cls.to(device, torch.float)
         
+        mixing = random.random()
+        do_mixup, do_cutmix = False, False
+        if hasattr(cfg.dataset, "mixup") and cfg.dataset.mixup:
+            if mixing < 0.25:
+                do_mixup = True
+                images, masks, masks_sfl, lam = mixup(images, masks)
+
+        if hasattr(cfg.dataset, "cutmix") and cfg.dataset.cutmix:
+            if (mixing>0.25) and (mixing <0.5) :
+                do_cutmix = True
+                images, masks, masks_sfl, lam = cutmix(images, masks)  
+
+        
+        
+        
         batch_size,c,h,w = images.shape
         
         with amp.autocast(enabled=True):
@@ -108,11 +165,17 @@ def train_one_epoch(cfg, config, model, optimizer, scheduler, criterion, dataloa
             #     y_pred =  model(images)
                 
             if hasattr(cfg, "model_type") and cfg.model_type == "timm_unet":
-                y_pred, y_pred_cls, y_pred_pix = model(images) 
+                y_pred = model(images) 
+                # y_pred, y_pred_cls, y_pred_pix = model(images) 
             else:
                 y_pred = model(images)    
             
+            
             loss  = criterion(y_pred, masks)
+            if do_mixup or do_cutmix:
+                loss2  = criterion(y_pred, masks_sfl)
+                loss = loss * lam  + loss2 * (1 - lam)                 
+            
 
             if hasattr(cfg.training, 'loss') and cfg.training.loss == "bce":
                 loss  = criterion(y_pred, masks)
@@ -158,7 +221,6 @@ def train_one_epoch(cfg, config, model, optimizer, scheduler, criterion, dataloa
         
     torch.cuda.empty_cache()
     gc.collect()
-    
     return losses.avg
 
 
@@ -187,7 +249,8 @@ def valid_one_epoch(cfg, model, optimizer, criterion, dataloader):
             
             
         if hasattr(cfg, "model_type") and cfg.model_type == "timm_unet":
-            y_pred, y_pred_cls, y_pred_pix = model(images) 
+            y_pred = model(images) 
+            # y_pred, y_pred_cls, y_pred_pix = model(images) 
         else:
             y_pred = model(images)
             
@@ -290,7 +353,7 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
     
                     
     train_dataset = cfg.CustomDataset(train_df, cfg, transform=train_transform, mode="train")
-    valid_dataset = cfg.CustomDataset(val_df, cfg, transform=val_transform, mode="val")  
+    # valid_dataset = cfg.CustomDataset(val_df, cfg, transform=val_transform, mode="val")  
     valid_dataset_ctrl = cfg.CustomDataset(val_df_contrail, cfg, transform=val_transform, mode="val")      
 
     train_loader = DataLoader(
@@ -302,14 +365,14 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
         drop_last = True,
     )
 
-    valid_loader = DataLoader(
-        valid_dataset, 
-        batch_size = cfg.training.batch_size * 2, 
-        shuffle = False, 
-        num_workers = cfg.environment.num_workers, 
-        pin_memory = True, 
-        drop_last = False
-    )
+    # valid_loader = DataLoader(
+    #     valid_dataset, 
+    #     batch_size = cfg.training.batch_size * 2, 
+    #     shuffle = False, 
+    #     num_workers = cfg.environment.num_workers, 
+    #     pin_memory = True, 
+    #     drop_last = False
+    # )
     
     valid_loader_ctrl = DataLoader(
         valid_dataset_ctrl, 
@@ -349,29 +412,31 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
         print(cfg.dataset.fold)
         
         cfg.epoch = epoch                
-        train_loss = train_one_epoch(cfg, config, model, optimizer, scheduler, criterion, train_loader) 
-        val_loss, val_scores = valid_one_epoch(cfg, model, optimizer, criterion, valid_loader)    
+        train_loss = train_one_epoch(cfg, config, model, optimizer, scheduler, criterion, train_loader)         
+        
+        # val_loss, val_scores = valid_one_epoch(cfg, model, optimizer, criterion, valid_loader)    
         val_loss_ctrl, val_scores_ctrl = valid_one_epoch(cfg, model, optimizer, criterion, valid_loader_ctrl)    
 
-        val_dice, val_dice_ctrl = val_scores[0], val_scores_ctrl[0]
+        # val_dice, val_dice_ctrl = val_scores[0], val_scores_ctrl[0]
+        val_dice_ctrl = val_scores_ctrl[0]
         
         if config['lr_scheduler_name']=='ReduceLROnPlateau':
-            scheduler.step(val_loss)
+            scheduler.step(val_loss_ctrl)
         elif config['lr_scheduler_name']=='CosineAnnealingLR':
             scheduler.step()
         
         
-        # deep copy the model
-        if val_dice >= best_dice:
-            cfg.logger.info(f"Fold {cfg.dataset.fold} - Epoch {epoch} - Valid Dice Score Improved ({best_dice:0.4f} ---> {val_dice:0.4f})")
-            best_dice = val_dice
-            model_save_pth = ""
-            if cfg.dataset.fold != -1:
-                model_save_pth = f"{cfg.output_dir}/checkpoint_dice_fold{cfg.dataset.fold}.pth"
-            else:
-                model_save_pth = f"{cfg.output_dir}/checkpoint_dice.pth"  
-            ## calculate and save statistics
-            torch.save( {'model': model.state_dict()}, model_save_pth)   
+        # # deep copy the model
+        # if val_dice >= best_dice:
+        #     cfg.logger.info(f"Fold {cfg.dataset.fold} - Epoch {epoch} - Valid Dice Score Improved ({best_dice:0.4f} ---> {val_dice:0.4f})")
+        #     best_dice = val_dice
+        #     model_save_pth = ""
+        #     if cfg.dataset.fold != -1:
+        #         model_save_pth = f"{cfg.output_dir}/checkpoint_dice_fold{cfg.dataset.fold}.pth"
+        #     else:
+        #         model_save_pth = f"{cfg.output_dir}/checkpoint_dice.pth"  
+        #     ## calculate and save statistics
+        #     torch.save( {'model': model.state_dict()}, model_save_pth)   
             
             
         # deep copy the model
@@ -387,7 +452,7 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
             torch.save( {'model': model.state_dict()}, model_save_pth)   
             
         
-    cfg.logger.info(f"Fold {cfg.dataset.fold} - Dice CV ({best_dice:0.4f})")
+    cfg.logger.info(f"Fold {cfg.dataset.fold} - Dice CV ({best_dice_ctrl:0.4f})")
     cfg.logger.info("*"*100)
 
     print("*"*100)
@@ -442,6 +507,8 @@ if __name__ == "__main__":
 
     df = pd.read_csv('../input/data_utils/train_5_folds.csv')
     val_df_contrail = pd.read_csv('../input/data_utils/val_df_filled.csv') 
+    train_dups = np.load("/home/rohits/pv1/Contrail_Detection/input/data_utils/dups_train.npy")
+    train_dups = [int(train_id) for train_id in train_dups]
     
     if hasattr(cfg.dataset, "remove_outleirs") and cfg.dataset.remove_outleirs:
         df['id'] = df['id'].apply(lambda x: str(x))
@@ -454,7 +521,7 @@ if __name__ == "__main__":
         print(f"Shape After Removing Outliers: {df.shape}, {val_df_contrail.shape}" )
 
         
-    for fold in [3]: # [0, 1, 2, 3, 4]
+    for fold in [0]: # [0, 1, 2, 3, 4]
         cfg.dataset.fold = fold
         train_df = df.loc[df.fold != fold].reset_index(drop=True)
         val_df = df.loc[df.fold == fold].reset_index(drop=True)
@@ -463,49 +530,91 @@ if __name__ == "__main__":
         
         if hasattr(cfg.training, 'use_pl') and cfg.training.use_pl:
             
-            # df_tr_s1_3 = pd.read_csv(f'../input/pseudo/train_data_3.csv') # s1
-            # df_tr_s1_5 = pd.read_csv(f'../input/pseudo/train_data_5.csv') # s1
+            if hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v1":
+                df_tr_s1_3 = pd.read_csv(f'../input/pseudo/train_data_3.csv') # s1
+                df_tr_s1_5 = pd.read_csv(f'../input/pseudo/train_data_5.csv') # s1
 
-            # df_tr_s1_3 = df_tr_s1_3.loc[df_tr_s1_3.fold != fold].reset_index(drop=True)
-            # df_tr_s1_5 = df_tr_s1_5.loc[df_tr_s1_5.fold != fold].reset_index(drop=True)
+                df_tr_s1_3 = df_tr_s1_3.loc[df_tr_s1_3.fold != fold].reset_index(drop=True)
+                df_tr_s1_5 = df_tr_s1_5.loc[df_tr_s1_5.fold != fold].reset_index(drop=True)
 
-            # df_tr_s1_3['label'] = df_tr_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
-            # df_tr_s1_5['label'] = df_tr_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
+                df_tr_s1_3['label'] = df_tr_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
+                df_tr_s1_5['label'] = df_tr_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
 
-            
-            # df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_3.csv') # s1
-            # df_val_s1_5 = pd.read_csv(f'../input/pseudo/validation_data_5.csv') # s1
+                
+                df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_3.csv') # s1
+                df_val_s1_5 = pd.read_csv(f'../input/pseudo/validation_data_5.csv') # s1
 
-            # df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
-            # df_val_s1_5['label'] = df_val_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
+                df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
+                df_val_s1_5['label'] = df_val_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
 
-            # train_df = pd.concat([
-            #     train_df, df_tr_s1_3, df_val_s1_5, df_val_s1_3, df_val_s1_5
-            # ]).reset_index(drop=True) 
- 
-             
-            df_val_s1_2 = pd.read_csv(f'../input/pseudo/validation_data_2.csv') # s1
-            df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_3.csv') # s1
-            df_val_s1_5 = pd.read_csv(f'../input/pseudo/validation_data_5.csv') # s1
-            df_val_s1_6 = pd.read_csv(f'../input/pseudo/validation_data_6.csv') # s1
-            
-            
-
-            df_val_s1_2['label'] = df_val_s1_2['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
-            df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
-            df_val_s1_5['label'] = df_val_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
-            df_val_s1_6['label'] = df_val_s1_6['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
-            
-            
-
-            train_df = pd.concat([
-                train_df, df_val_s1_2, df_val_s1_3, df_val_s1_5, df_val_s1_6
-            ]).reset_index(drop=True) 
+                train_df = pd.concat([
+                    train_df, df_tr_s1_3, df_val_s1_5, df_val_s1_3, df_val_s1_5
+                ]).reset_index(drop=True) 
+            elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v2":
+                df_val_s1_2 = pd.read_csv(f'../input/pseudo/validation_data_2.csv') # s1
+                df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_3.csv') # s1
+                df_val_s1_5 = pd.read_csv(f'../input/pseudo/validation_data_5.csv') # s1
+                df_val_s1_6 = pd.read_csv(f'../input/pseudo/validation_data_6.csv') # s1
+                
+                df_val_s1_2['label'] = df_val_s1_2['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
+                df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
+                df_val_s1_5['label'] = df_val_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
+                df_val_s1_6['label'] = df_val_s1_6['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
+                
+                
+                train_df = pd.concat([
+                    train_df, df_val_s1_2, df_val_s1_3, df_val_s1_5, df_val_s1_6
+                ]).reset_index(drop=True) 
+                
+            elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v3":
+                
+                df_tr_s1_3 = pd.read_csv(f'../input/pseudo/train_data_3.csv') # s1
+                df_tr_s1_5 = pd.read_csv(f'../input/pseudo/train_data_5.csv') # s1
+                
+                
+                df_val_s1_2 = pd.read_csv(f'../input/pseudo/validation_data_2.csv') # s1
+                df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_3.csv') # s1
+                df_val_s1_5 = pd.read_csv(f'../input/pseudo/validation_data_5.csv') # s1
+                df_val_s1_6 = pd.read_csv(f'../input/pseudo/validation_data_6.csv') # s1
+                
+                df_tr_s1_3['label'] = df_tr_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
+                df_tr_s1_5['label'] = df_tr_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
+                
+                
+                df_val_s1_2['label'] = df_val_s1_2['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
+                df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
+                df_val_s1_5['label'] = df_val_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
+                df_val_s1_6['label'] = df_val_s1_6['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
+                
+                
+                # train_df = pd.concat([
+                #     train_df, df_tr_s1_3, df_tr_s1_5, df_val_s1_2, df_val_s1_3, df_val_s1_5, df_val_s1_6
+                # ]).reset_index(drop=True) 
+                
+                train_df = pd.concat([
+                    train_df, df_tr_s1_3, df_val_s1_3, df_val_s1_5
+                ]).reset_index(drop=True) 
+                
+                
+                
+            elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v4":
+                df_tr_s1_3 = pd.read_csv(f'../input/pseudo/train_data_3.csv') # s1
+                df_tr_s1_3['label'] = df_tr_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
+                train_df = pd.concat([
+                    train_df, df_tr_s1_3
+                ]).reset_index(drop=True) 
  
  
         print(train_df.shape)
         print(train_df['class'].value_counts())
         
+        train_df = pd.concat([train_df, val_df]).reset_index(drop=True)
+        # print(train_df.shape)
+        train_df = train_df.loc[~train_df['id'].isin(train_dups)].reset_index(drop=True)
+        # print(train_df.shape)
+        
+        
+        val_df = val_df_contrail
         _ = train_loop(train_df, val_df, val_df_contrail, cfg, config)
     
     
