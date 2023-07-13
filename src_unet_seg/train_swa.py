@@ -25,6 +25,8 @@ from torch.utils.data import Dataset
 import torchvision
 from types import SimpleNamespace
 
+from swa import SWA
+
 from torchvision import datasets
 import cv2
 from torch.cuda import amp
@@ -394,6 +396,10 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
     
     # init optimizer and scheduler
     optimizer = optim.Adam(model.parameters(), **config['Adam'])
+    
+    optimizer = SWA(optimizer)
+
+    
     if config['lr_scheduler_name']=='ReduceLROnPlateau':
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, **config['lr_scheduler']['ReduceLROnPlateau'])
     elif config['lr_scheduler_name']=='CosineAnnealingLR':
@@ -413,9 +419,13 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
         
         cfg.epoch = epoch                
         train_loss = train_one_epoch(cfg, config, model, optimizer, scheduler, criterion, train_loader)         
+        optimizer.update_swa()
+
         
         # val_loss, val_scores = valid_one_epoch(cfg, model, optimizer, criterion, valid_loader)    
+        optimizer.swap_swa_sgd()
         val_loss_ctrl, val_scores_ctrl = valid_one_epoch(cfg, model, optimizer, criterion, valid_loader_ctrl)    
+        optimizer.swap_swa_sgd()
 
         # val_dice, val_dice_ctrl = val_scores[0], val_scores_ctrl[0]
         val_dice_ctrl = val_scores_ctrl[0]
@@ -441,6 +451,7 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
             
         # deep copy the model
         if val_dice_ctrl >= best_dice_ctrl:
+            optimizer.swap_swa_sgd()
             cfg.logger.info(f"Fold {cfg.dataset.fold} - Epoch {epoch} - Valid Dice CTRL Score Improved ({best_dice_ctrl:0.4f} ---> {val_dice_ctrl:0.4f})")
             best_dice_ctrl = val_dice_ctrl
             model_save_pth = ""
@@ -611,8 +622,7 @@ if __name__ == "__main__":
         print(train_df.shape)
         print(train_df['class'].value_counts())
         
-        train_df = pd.concat([train_df, val_df]).reset_index(drop=True)
-        # print(train_df.shape)
+        # train_df = pd.concat([train_df, val_df]).reset_index(drop=True)
         train_df = train_df.loc[~train_df['id'].isin(train_dups)].reset_index(drop=True)
         # print(train_df.shape)
         

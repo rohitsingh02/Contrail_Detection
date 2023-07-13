@@ -53,8 +53,15 @@ class ContrailDataset:
         return len(self.images)
         
     def __getitem__(self, idx):
-        image = np.load("../input/" + self.images[idx]).astype(float)   
+        image = np.load("../input/" + self.images[idx]).astype(float)
         label = np.load("../input/" + self.labels[idx]).astype(float)
+        label_cls = 1 if label.sum() > 0 else 0
+        
+        if hasattr(self.cfg.dataset, "pretrain") and self.cfg.dataset.pretrain and (label_cls == 1) and self.mode == "train":
+            label = np.load("../input/" + self.df['label_many'][idx]).astype(float)
+            label = np.mean(label, axis=3)
+        else:
+            label = np.load("../input/" + self.labels[idx]).astype(float)        
             
         # label_cls = 1 if label.sum() > 0 else 0
         if self.transform :
