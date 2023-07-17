@@ -1,9 +1,7 @@
-import os
-import shutil
-import pathlib
 import time
 import re
 import gc
+import os
 import shutil
 import yaml
 import sys
@@ -25,7 +23,7 @@ from torch.utils.data import Dataset
 import torchvision
 from types import SimpleNamespace
 
-from swa import SWA
+from torch.optim.swa_utils import AveragedModel, SWALR
 
 from torchvision import datasets
 import cv2
@@ -154,9 +152,6 @@ def train_one_epoch(cfg, config, model, optimizer, scheduler, criterion, dataloa
             if (mixing>0.25) and (mixing <0.5) :
                 do_cutmix = True
                 images, masks, masks_sfl, lam = cutmix(images, masks)  
-
-        
-        
         
         batch_size,c,h,w = images.shape
         
@@ -393,12 +388,14 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
     if cfg.architecture.pretrained_weights != "":
         load_checkpoint(cfg, model)
     model.to(cfg.device)
+
+    swa_model = AveragedModel(model, device=cfg.device, use_buffers=True)
+    swa_lr = 1.0e-4
+    swa_start = 0
     
     # init optimizer and scheduler
     optimizer = optim.Adam(model.parameters(), **config['Adam'])
-    
-    optimizer = SWA(optimizer)
-
+    swa_scheduler = SWALR(optimizer, swa_lr=swa_lr)
     
     if config['lr_scheduler_name']=='ReduceLROnPlateau':
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, **config['lr_scheduler']['ReduceLROnPlateau'])
@@ -419,20 +416,23 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
         
         cfg.epoch = epoch                
         train_loss = train_one_epoch(cfg, config, model, optimizer, scheduler, criterion, train_loader)         
-        optimizer.update_swa()
 
+        if epoch >= swa_start:
+            swa_model.update_parameters(model)
+            swa_scheduler.step()
+            model_to_eval = swa_model
+        else:
+            model_to_eval = model
         
         # val_loss, val_scores = valid_one_epoch(cfg, model, optimizer, criterion, valid_loader)    
-        optimizer.swap_swa_sgd()
-        val_loss_ctrl, val_scores_ctrl = valid_one_epoch(cfg, model, optimizer, criterion, valid_loader_ctrl)    
-        optimizer.swap_swa_sgd()
+        val_loss_ctrl, val_scores_ctrl = valid_one_epoch(cfg, model_to_eval, optimizer, criterion, valid_loader_ctrl)    
 
         # val_dice, val_dice_ctrl = val_scores[0], val_scores_ctrl[0]
         val_dice_ctrl = val_scores_ctrl[0]
         
-        if config['lr_scheduler_name']=='ReduceLROnPlateau':
+        if config['lr_scheduler_name']=='ReduceLROnPlateau' and not epoch >= swa_start:
             scheduler.step(val_loss_ctrl)
-        elif config['lr_scheduler_name']=='CosineAnnealingLR':
+        elif config['lr_scheduler_name']=='CosineAnnealingLR' and not epoch >= swa_start:
             scheduler.step()
         
         
@@ -451,7 +451,13 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
             
         # deep copy the model
         if val_dice_ctrl >= best_dice_ctrl:
-            optimizer.swap_swa_sgd()
+            if epoch >= swa_start:
+                model_state_dict = swa_model.state_dict()
+                del model_state_dict['n_averaged']
+                model_state_dict = {k.replace('module.module.', 'module.'): v for k, v in model_state_dict.items()}
+            else:
+                model_state_dict = model.state_dict()
+
             cfg.logger.info(f"Fold {cfg.dataset.fold} - Epoch {epoch} - Valid Dice CTRL Score Improved ({best_dice_ctrl:0.4f} ---> {val_dice_ctrl:0.4f})")
             best_dice_ctrl = val_dice_ctrl
             model_save_pth = ""
@@ -460,7 +466,7 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
             else:
                 model_save_pth = f"{cfg.output_dir}/checkpoint_dice_ctrl.pth"  
             ## calculate and save statistics
-            torch.save( {'model': model.state_dict()}, model_save_pth)   
+            torch.save({'model': model_state_dict}, model_save_pth)   
             
         
     cfg.logger.info(f"Fold {cfg.dataset.fold} - Dice CV ({best_dice_ctrl:0.4f})")
@@ -617,17 +623,44 @@ if __name__ == "__main__":
                 train_df = pd.concat([
                     train_df, df_tr_s1_3
                 ]).reset_index(drop=True) 
+                
+                
+            elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v5":
+                df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_3.csv') # s1
+                df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
+                train_df = pd.concat([
+                   df_val_s1_3 #train_df, df_tr_s1_3
+                ]).reset_index(drop=True) 
+                
+            elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v6":
+                df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_2.csv') # s1
+                df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
+                train_df = pd.concat([
+                   df_val_s1_3 #train_df, df_tr_s1_3
+                ]).reset_index(drop=True) 
+                
+            elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v7":
+                df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_5.csv') # s1
+                df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
+                train_df = pd.concat([
+                   df_val_s1_3 #train_df, df_tr_s1_3
+                ]).reset_index(drop=True) 
+                
+            elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v8":
+                df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_6.csv') # s1
+                df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
+                train_df = pd.concat([
+                   df_val_s1_3 #train_df, df_tr_s1_3
+                ]).reset_index(drop=True) 
  
  
         print(train_df.shape)
-        print(train_df['class'].value_counts())
+        # print(train_df['class'].value_counts())
         
         # train_df = pd.concat([train_df, val_df]).reset_index(drop=True)
-        train_df = train_df.loc[~train_df['id'].isin(train_dups)].reset_index(drop=True)
-        # print(train_df.shape)
+        # train_df = train_df.loc[~train_df['id'].isin(train_dups)].reset_index(drop=True)
         
+        # train_df = train_df.head(500)
         
         val_df = val_df_contrail
         _ = train_loop(train_df, val_df, val_df_contrail, cfg, config)
-    
-    

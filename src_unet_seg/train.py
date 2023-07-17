@@ -85,7 +85,7 @@ def cutmix(data, target, alpha=1.):
     new_data[:, :, bby1:bby2, bbx1:bbx2] = data[indices, :, bby1:bby2, bbx1:bbx2]
     # adjust lambda to exactly match pixel ratio
     lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (data.size()[-1] * data.size()[-2]))
-    targets = (target, shuffled_target, lam)
+    # targets = (target, shuffled_target, lam)
 
     return new_data,target,shuffled_target,lam
 
@@ -152,18 +152,14 @@ def train_one_epoch(cfg, config, model, optimizer, scheduler, criterion, dataloa
             if (mixing>0.25) and (mixing <0.5) :
                 do_cutmix = True
                 images, masks, masks_sfl, lam = cutmix(images, masks)  
-
-        
-        
         
         batch_size,c,h,w = images.shape
-        
         with amp.autocast(enabled=True):
             
             # if cfg.architecture.backbone == "se_resnext101_32x4d":
             #     # y_pred, y_pred_deeps, y_pred_cls =  model(images)
             #     y_pred =  model(images)
-                
+              
             if hasattr(cfg, "model_type") and cfg.model_type == "timm_unet":
                 y_pred = model(images) 
                 # y_pred, y_pred_cls, y_pred_pix = model(images) 
@@ -605,6 +601,17 @@ if __name__ == "__main__":
                 df_tr_s1_3['label'] = df_tr_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
                 train_df = pd.concat([
                     train_df, df_tr_s1_3
+                ]).reset_index(drop=True) 
+                
+            elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v5":
+                
+                df_tr_s1_3 = pd.read_csv(f'../input/pseudo/train_data_3.csv') # s1
+                df_tr_s1_3['label'] = df_tr_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
+                
+                df_tr_s1_2 = pd.read_csv(f'../input/pseudo/train_data_2.csv') # s1
+                df_tr_s1_2['label'] = df_tr_s1_2['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
+                train_df = pd.concat([
+                    train_df, df_tr_s1_3, df_tr_s1_2
                 ]).reset_index(drop=True) 
  
  
