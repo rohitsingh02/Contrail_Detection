@@ -24,8 +24,9 @@
 # python train.py -C yaml/exp3.yaml
 
 
-# python train_swa.py -C yaml_swa/exp1.yaml
-python train_swa.py -C yaml_swa/exp2.yaml
+python train_swa.py -C yaml_swa/exp1.yaml
+# python train_swa.py -C yaml_swa/exp2.yaml
+# python train_swa.py -C yaml_swa/exp3.yaml
 
 
 # python train.py -C yaml/exp4.yaml

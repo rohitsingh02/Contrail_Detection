@@ -165,7 +165,9 @@ def train_one_epoch(cfg, config, model, optimizer, scheduler, criterion, dataloa
                 # y_pred, y_pred_cls, y_pred_pix = model(images) 
             else:
                 y_pred = model(images)    
-            
+                
+            if cfg.architecture.model_name == "SEG":
+                y_pred = torch.nn.functional.interpolate(y_pred, size=256, mode='nearest') 
             
             loss  = criterion(y_pred, masks)
             if do_mixup or do_cutmix:
@@ -249,6 +251,10 @@ def valid_one_epoch(cfg, model, optimizer, criterion, dataloader):
             # y_pred, y_pred_cls, y_pred_pix = model(images) 
         else:
             y_pred = model(images)
+            
+            
+        if cfg.architecture.model_name == "SEG":
+            y_pred = torch.nn.functional.interpolate(y_pred, size=256, mode='bilinear') 
             
         loss  = criterion(y_pred, masks)
         
@@ -603,15 +609,34 @@ if __name__ == "__main__":
                     train_df, df_tr_s1_3
                 ]).reset_index(drop=True) 
                 
-            elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v5":
+            # elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v5":
                 
+            #     df_tr_s1_3 = pd.read_csv(f'../input/pseudo/train_data_3.csv') # s1
+            #     df_tr_s1_3['label'] = df_tr_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
+                
+            #     df_tr_s1_2 = pd.read_csv(f'../input/pseudo/train_data_2.csv') # s1
+            #     df_tr_s1_2['label'] = df_tr_s1_2['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
+            #     train_df = pd.concat([
+            #         train_df, df_tr_s1_3, df_tr_s1_2
+            #     ]).reset_index(drop=True) 
+            
+            
+            elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v5":
                 df_tr_s1_3 = pd.read_csv(f'../input/pseudo/train_data_3.csv') # s1
                 df_tr_s1_3['label'] = df_tr_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
                 
-                df_tr_s1_2 = pd.read_csv(f'../input/pseudo/train_data_2.csv') # s1
-                df_tr_s1_2['label'] = df_tr_s1_2['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
+                # df_val_s1_0 = pd.read_csv(f'../input/pseudo/validation_data_0.csv') # s1
+                df_val_s1_1 = pd.read_csv(f'../input/pseudo/validation_data_1.csv') # s1
+                df_val_s1_2 = pd.read_csv(f'../input/pseudo/validation_data_2.csv') # s1
+                df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_3.csv') # s1
+
+                # df_val_s1_0['label'] = df_val_s1_0['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
+                df_val_s1_1['label'] = df_val_s1_1['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
+                df_val_s1_2['label'] = df_val_s1_2['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
+                df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
+ 
                 train_df = pd.concat([
-                    train_df, df_tr_s1_3, df_tr_s1_2
+                    train_df, df_tr_s1_3, df_val_s1_1, df_val_s1_2, df_val_s1_3
                 ]).reset_index(drop=True) 
  
  
