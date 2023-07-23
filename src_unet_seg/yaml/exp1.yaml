@@ -1,11 +1,11 @@
 dataset_class: contrail_dataset
 model_class: contrail_model 
-exp_name: ../output1/exp_10
+exp_name: ../output2/exp_10
 # model_type: 'timm_unet'
 debug: false
 architecture:
     model_name: 'FPN'
-    backbone: 'efficientnet-b6' # 'ecaresnet269d' #'eca_resnext26ts' #'cs3sedarknet_l' #cs3edgenet_x, 'cs3darknet_focus_l', 'cs3darknet_l'
+    backbone: 'efficientnet-b7' # 'ecaresnet269d' #'eca_resnext26ts' #'cs3sedarknet_l' #cs3edgenet_x, 'cs3darknet_focus_l', 'cs3darknet_l'
     pretrained: true
     mixout: 0.0
     default_weight: 'imagenet'
@@ -33,7 +33,7 @@ environment:
     num_workers: 4
     seed: 42
 training:
-    use_pl: true
+    use_pl: false
     pl_version: "v4"
     ntb: 3
     replace_label: false
@@ -43,7 +43,7 @@ training:
     fp16: true
     epochs: 100
     save_best: true
-    batch_size: 128 #86
+    batch_size: 98 #86
     grad_accumulation: 1
     batch_scheduler: true
     lr: 2.0e-3 #2.0e-3 #1.e-4 #2.0e-3

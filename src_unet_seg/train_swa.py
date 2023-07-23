@@ -225,13 +225,47 @@ def train_one_epoch(cfg, config, model, optimizer, scheduler, criterion, dataloa
     return losses.avg
 
 
+def check_ensemble_score(masks, preds1):
+    call_signs = [
+        "nir_07_tta", 
+        "roh_02_tta", 
+        "nir_01",
+        "nir_05",
+        "162_tta",
+        "166_tta",
+        "121_tta",
+        "162",
+        "125"
+    ] 
+
+
+    preds = []
+
+    for idx, sign in tqdm(enumerate(call_signs), total=len(call_signs)):
+        wt = torch.from_numpy(np.load(f"/home/rohits/pv1/Contrail_Detection/output/oofs/{sign}.npy")).flatten()   
+        preds.append(wt)
+        # print(wt.shape)
+        # score = dice_coef(model_masks, wt, thr=0.5).cpu().detach().numpy() 
+        # print(score)
+    preds.append(preds1.flatten())
+        
+    final_preds = preds
+    final_preds = torch.stack(final_preds).mean(dim=0)
+    score = dice_coef(masks.flatten(), final_preds, thr=0.5).cpu().detach().numpy() 
+
+    print("0.5 TH Score: ", score)
+    return score
+
+
+
+
 @torch.no_grad()
 def valid_one_epoch(cfg, model, optimizer, criterion, dataloader):
     losses = utils.AverageMeter()
     
     if hasattr(cfg.training, "tta") and cfg.training.tta:
-        model_tta = tta.SegmentationTTAWrapper(model, tta.aliases.d4_transform(), merge_mode='mean')
-        # model_tta = tta.SegmentationTTAWrapper(model, tta.aliases.flip_transform(), merge_mode='mean')
+        # model_tta = tta.SegmentationTTAWrapper(model, tta.aliases.d4_transform(), merge_mode='mean')
+        model_tta = tta.SegmentationTTAWrapper(model, tta.aliases.flip_transform(), merge_mode='mean')
         model_tta.eval()
     
     model.eval()
@@ -290,8 +324,6 @@ def valid_one_epoch(cfg, model, optimizer, criterion, dataloader):
             
             
         val_preds.append(torch.squeeze(y_pred, dim=1))
-        
-        
                 
         mem = torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0
         current_lr = optimizer.param_groups[0]['lr']
@@ -309,6 +341,8 @@ def valid_one_epoch(cfg, model, optimizer, criterion, dataloader):
     model_masks = torch.flatten(model_masks, start_dim=0, end_dim=1)
     model_preds = torch.flatten(model_preds, start_dim=0, end_dim=1) 
     
+    
+    ensemble_score = check_ensemble_score(model_masks.detach().cpu(), model_preds.detach().cpu())
     
     # best_threshold = 0.0
     # best_dice_score = 0.0
@@ -334,7 +368,7 @@ def valid_one_epoch(cfg, model, optimizer, criterion, dataloader):
     torch.cuda.empty_cache()
     gc.collect()
     # return losses.avg, val_preds, val_scores
-    return losses.avg, val_scores
+    return losses.avg, val_scores, ensemble_score
 
 
 # =========================================================================================
@@ -426,6 +460,7 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
     # Training & Validation loop
     best_dice = -np.inf
     best_dice_ctrl = -np.inf
+    best_ensemble_ctrl = -np.inf
         
     for epoch in range(cfg.training.epochs):
         
@@ -442,7 +477,7 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
             model_to_eval = model
         
         # val_loss, val_scores = valid_one_epoch(cfg, model, optimizer, criterion, valid_loader)    
-        val_loss_ctrl, val_scores_ctrl = valid_one_epoch(cfg, model_to_eval, optimizer, criterion, valid_loader_ctrl)    
+        val_loss_ctrl, val_scores_ctrl, val_ensemble_ctrl = valid_one_epoch(cfg, model_to_eval, optimizer, criterion, valid_loader_ctrl)    
 
         # val_dice, val_dice_ctrl = val_scores[0], val_scores_ctrl[0]
         val_dice_ctrl = val_scores_ctrl[0]
@@ -482,6 +517,27 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
                 model_save_pth = f"{cfg.output_dir}/checkpoint_dice_ctrl_fold{cfg.dataset.fold}.pth"
             else:
                 model_save_pth = f"{cfg.output_dir}/checkpoint_dice_ctrl.pth"  
+            ## calculate and save statistics
+            torch.save({'model': model_state_dict}, model_save_pth)   
+            
+            
+            
+                # deep copy the model
+        if val_ensemble_ctrl >= best_ensemble_ctrl:
+            if epoch >= swa_start:
+                model_state_dict = swa_model.state_dict()
+                del model_state_dict['n_averaged']
+                model_state_dict = {k.replace('module.module.', 'module.'): v for k, v in model_state_dict.items()}
+            else:
+                model_state_dict = model.state_dict()
+
+            cfg.logger.info(f"Fold {cfg.dataset.fold} - Epoch {epoch} - Ensemble CTRL Score Improved ({best_ensemble_ctrl:0.4f} ---> {val_ensemble_ctrl:0.4f})")
+            best_ensemble_ctrl = val_ensemble_ctrl
+            model_save_pth = ""
+            if cfg.dataset.fold != -1:
+                model_save_pth = f"{cfg.output_dir}/checkpoint_dice_ensemble_best{cfg.dataset.fold}.pth"
+            else:
+                model_save_pth = f"{cfg.output_dir}/checkpoint_dice_ctrl_ensemble_best.pth"  
             ## calculate and save statistics
             torch.save({'model': model_state_dict}, model_save_pth)   
             
@@ -566,7 +622,6 @@ if __name__ == "__main__":
         
         
         if hasattr(cfg.training, 'use_pl') and cfg.training.use_pl:
-            
             if hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v1":
                 df_tr_s1_3 = pd.read_csv(f'../input/pseudo/train_data_3.csv') # s1
                 df_tr_s1_5 = pd.read_csv(f'../input/pseudo/train_data_5.csv') # s1
@@ -702,6 +757,9 @@ if __name__ == "__main__":
         train_df = train_df.loc[~train_df['id'].isin(train_dups)].reset_index(drop=True)
         
         # train_df = train_df.head(500)
+        # filter scores < 0.5
+        train_df = train_df.loc[train_df.scores > 0.5].reset_index(drop=True)
+        
         
         val_df = val_df_contrail
         _ = train_loop(train_df, val_df, val_df_contrail, cfg, config)

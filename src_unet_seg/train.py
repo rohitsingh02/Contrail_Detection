@@ -648,7 +648,10 @@ if __name__ == "__main__":
         train_df = train_df.loc[~train_df['id'].isin(train_dups)].reset_index(drop=True)
         # print(train_df.shape)
         
+        # filter scores < 0.5
+        train_df = train_df.loc[train_df.scores > 0.5].reset_index(drop=True)
         
+        print(train_df.shape)        
         val_df = val_df_contrail
         _ = train_loop(train_df, val_df, val_df_contrail, cfg, config)
     
