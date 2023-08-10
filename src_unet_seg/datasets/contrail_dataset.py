@@ -57,11 +57,31 @@ class ContrailDataset:
         label = np.load("../input/" + self.labels[idx]).astype(float)
         label_cls = 1 if label.sum() > 0 else 0
         
+        # print(image.shape, label.shape)
+        
+        # print("../input/" + self.images[idx], "../input/" + self.labels[idx])
+        
         if hasattr(self.cfg.dataset, "pretrain") and self.cfg.dataset.pretrain and (label_cls == 1) and self.mode == "train":
             label = np.load("../input/" + self.df['label_many'][idx]).astype(float)
             label = np.mean(label, axis=3)
         else:
             label = np.load("../input/" + self.labels[idx]).astype(float)        
+           
+        if label.shape == (256, 256):
+            label =np.expand_dims(label, axis=2)
+           
+        if label.shape != (256, 256, 1) and hasattr(self.cfg.training, "train_label") and (self.cfg.training.train_label == "v1" or self.cfg.training.train_label == "pseudo"):
+            label = label[:, :, :, 0]
+        elif label.shape != (256, 256, 1) and hasattr(self.cfg.training, "train_label") and self.cfg.training.train_label == "v2":
+            label = label[:, :, :, 1]
+        elif label.shape != (256, 256, 1) and hasattr(self.cfg.training, "train_label") and self.cfg.training.train_label == "v3":
+            label = label[:, :, :, 2]
+        elif label.shape != (256, 256, 1) and hasattr(self.cfg.training, "train_label") and self.cfg.training.train_label == "v4":
+            label = label[:, :, :, 3]
+            
+            # print(label.shape)
+            # exit()
+           
             
         # label_cls = 1 if label.sum() > 0 else 0
         if self.transform :

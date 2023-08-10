@@ -1,15 +1,15 @@
 dataset_class: contrail_dataset
 model_class: contrail_model 
-exp_name: ../output2/exp_10_swa2
+exp_name: ../output3/exp_10_s1
 # model_type: 'timm_unet'
 debug: false
 architecture:
-    model_name: 'FPN'
+    model_name: 'Unet'
     backbone: 'efficientnet-b7' # 'ecaresnet269d' #'eca_resnext26ts' #'cs3sedarknet_l' #cs3edgenet_x, 'cs3darknet_focus_l', 'cs3darknet_l'
     pretrained: true
     mixout: 0.0
     default_weight: 'imagenet'
-    pretrained_weights: "/home/rohits/pv1/Contrail_Detection/output2/exp_10_swa/FPN/efficientnet-b7-256"
+    pretrained_weights: "/home/rohits/pv1/Contrail_Detection/output3/exp_10_s1/Unet/efficientnet-b7-512"
     pool: Mean 
 dataset:
     mixup: true
@@ -26,28 +26,32 @@ dataset:
     base_dir: ../input
     target_col: 'preds'
     num_folds: 5
-    img_width: 256 #512 #256 #256 #256
-    img_height: 256 #512 #256 #256 #256
+    img_width: 512 #512 #256 #256 #256
+    img_height: 512 #512 #256 #256 #256
 environment:
     mixed_precision: true
     num_workers: 4
     seed: 42
 training:
-    tta: true
-    use_pl: true
-    pl_version: "v9"
+    swa_start: 100
+    train_label: "v1"
+    # train_label2: "v1"
+    # train_label: "pseudo"
+    tta: false
+    use_pl: false
+    pl_version: "pseudo"
     ntb: 3
     replace_label: false
     loss: bce+mixed_loss # bce , bce+mixed_loss, bce+lovastz, bce+tversky, dice
     augs_train: "train_2"
     augs_val: "valid_2"
     fp16: true
-    epochs: 100
+    epochs: 200
     save_best: true
-    batch_size: 98 #86
+    batch_size: 26 #86
     grad_accumulation: 1
     batch_scheduler: true
-    lr: 1.0e-4 #2.0e-3 #1.e-4 #2.0e-3
+    lr: 2.0e-3 #2.0e-3 #1.e-4 #2.0e-3
 aux_params:
     pooling: 'avg'
     dropout: 0.5

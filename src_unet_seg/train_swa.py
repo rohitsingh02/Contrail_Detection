@@ -15,6 +15,7 @@ import importlib
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
 import torch
+from torchsummary import summary
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import optim
@@ -22,20 +23,16 @@ from torch.utils.data import DataLoader, random_split
 from torch.utils.data import Dataset
 import torchvision
 import ttach as tta
-
 from types import SimpleNamespace
-
 from torch.optim.swa_utils import AveragedModel, SWALR
-
 from torchvision import datasets
 import cv2
 from torch.cuda import amp
-
 import torchvision.transforms as T
 from torchvision.transforms import Compose, ToTensor, Resize
 from torchvision.utils import make_grid
 from schedulers import fetch_scheduler, cosine_warmup_lr_scheduler
-from loss import loss_fn, loss_fn_s2, loss_fn_s3, dice_coef, iou_coef
+from loss import loss_fn, loss_fn_s2, loss_fn_s3, dice_coef, iou_coef, wingloss
 import segmentation_models_pytorch as smp
 from config import get_config
 from schedulers import CosineLR
@@ -106,6 +103,19 @@ def get_model(cfg):
     return Net(cfg)
 
 
+def freeze_encoder(model):
+    for child in model.module.model.encoder.children():
+        for param in child.parameters():
+            param.requires_grad = False
+    return
+
+def unfreeze(model):
+    for child in model.module.model.children():
+        for param in child.parameters():
+            param.requires_grad = True
+    return
+
+
 def load_checkpoint(cfg, model):
     weight = f"{cfg.architecture.pretrained_weights}"
     
@@ -160,10 +170,6 @@ def train_one_epoch(cfg, config, model, optimizer, scheduler, criterion, dataloa
         batch_size,c,h,w = images.shape
         
         with amp.autocast(enabled=True):
-            
-            # if cfg.architecture.backbone == "se_resnext101_32x4d":
-            #     # y_pred, y_pred_deeps, y_pred_cls =  model(images)
-            #     y_pred =  model(images)
                 
             if hasattr(cfg, "model_type") and cfg.model_type == "timm_unet":
                 y_pred = model(images) 
@@ -190,6 +196,8 @@ def train_one_epoch(cfg, config, model, optimizer, scheduler, criterion, dataloa
                 loss += loss_fn(y_pred, masks) 
             elif  hasattr(cfg.training, 'loss') and cfg.training.loss == "dice": 
                 loss += loss_fn_s3(y_pred, masks)
+            elif  hasattr(cfg.training, 'loss') and cfg.training.loss == "wingloss":
+                loss += wingloss(y_pred, masks)
               
             
         if cfg.training.grad_accumulation > 1:
@@ -225,39 +233,6 @@ def train_one_epoch(cfg, config, model, optimizer, scheduler, criterion, dataloa
     return losses.avg
 
 
-def check_ensemble_score(masks, preds1):
-    call_signs = [
-        "nir_07_tta", 
-        "roh_02_tta", 
-        "nir_01",
-        "nir_05",
-        "162_tta",
-        "166_tta",
-        "121_tta",
-        "162",
-        "125"
-    ] 
-
-
-    preds = []
-
-    for idx, sign in tqdm(enumerate(call_signs), total=len(call_signs)):
-        wt = torch.from_numpy(np.load(f"/home/rohits/pv1/Contrail_Detection/output/oofs/{sign}.npy")).flatten()   
-        preds.append(wt)
-        # print(wt.shape)
-        # score = dice_coef(model_masks, wt, thr=0.5).cpu().detach().numpy() 
-        # print(score)
-    preds.append(preds1.flatten())
-        
-    final_preds = preds
-    final_preds = torch.stack(final_preds).mean(dim=0)
-    score = dice_coef(masks.flatten(), final_preds, thr=0.5).cpu().detach().numpy() 
-
-    print("0.5 TH Score: ", score)
-    return score
-
-
-
 
 @torch.no_grad()
 def valid_one_epoch(cfg, model, optimizer, criterion, dataloader):
@@ -281,18 +256,12 @@ def valid_one_epoch(cfg, model, optimizer, criterion, dataloader):
         labels_cls = labels_cls.to(device, torch.float)
                 
         batch_size, c, h, w = images.shape        
-        # if cfg.architecture.backbone == "se_resnext101_32x4d":
-        #     # y_pred, y_pred_deeps, y_pred_cls =  model(images)
-        #     # print(type(images))
-        #     y_pred =  model(images)
-            
             
         if hasattr(cfg, "model_type") and cfg.model_type == "timm_unet":
             y_pred = model_tta(images) if hasattr(cfg.training, "tta") and cfg.training.tta else model(images) 
         else:
             y_pred = model_tta(images) if hasattr(cfg.training, "tta") and cfg.training.tta else model(images) 
 
-            # y_pred = model(images)
             
         loss  = criterion(y_pred, masks)
         
@@ -308,8 +277,10 @@ def valid_one_epoch(cfg, model, optimizer, criterion, dataloader):
             loss += loss_fn(y_pred, masks) 
         elif  hasattr(cfg.training, 'loss') and cfg.training.loss == "dice":
             loss += loss_fn_s3(y_pred, masks)
-        
-                    
+            
+        elif  hasattr(cfg.training, 'loss') and cfg.training.loss == "wingloss":
+            loss += wingloss(y_pred, masks)
+                 
         losses.update(loss.item(), batch_size)
         # if cfg.dataset.img_height > 512:
         #     y_pred = torch.nn.functional.interpolate(y_pred, size=256, mode='nearest') 
@@ -331,7 +302,6 @@ def valid_one_epoch(cfg, model, optimizer, criterion, dataloader):
             fold=cfg.dataset.fold,
             epoch=cfg.epoch,
             valid_loss=f'{losses.avg:0.4f}',            
-            # val_score=np.mean(val_scores, axis=0),
             lr=f'{current_lr:0.5f}',
             gpu_memory=f'{mem:0.2f} GB'
         )
@@ -342,19 +312,7 @@ def valid_one_epoch(cfg, model, optimizer, criterion, dataloader):
     model_preds = torch.flatten(model_preds, start_dim=0, end_dim=1) 
     
     
-    ensemble_score = check_ensemble_score(model_masks.detach().cpu(), model_preds.detach().cpu())
-    
-    # best_threshold = 0.0
-    # best_dice_score = 0.0
-    # for threshold in [i / 100 for i in range(101)] :
-    #     # if threshold < 0.1 or threshold > 0.55:
-    #     #     continue
-    #     score = dice_coef(model_masks, model_preds, thr=threshold).cpu().detach().numpy() 
-    #     if score > best_dice_score:
-    #         best_dice_score = score
-    #         best_threshold = threshold
-    
-    
+    ensemble_score = 0   
     best_dice_score = dice_coef(model_masks, model_preds).cpu().detach().numpy() 
     # dice_score = dice_coef(model_masks, model_preds).cpu().detach().numpy() 
     iou_score = iou_coef(model_masks, model_preds).cpu().detach().numpy()        
@@ -393,6 +351,7 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
     else:
         train_transform =  augs.get_transform(cfg=cfg)['train_1']
 
+
     if hasattr(cfg.training, 'augs_val') and cfg.training.augs_val == "valid_1":
         val_transform =  augs.get_transform(cfg=cfg)['valid_1']
     elif hasattr(cfg.training, 'augs_val') and cfg.training.augs_val == "valid_2":
@@ -402,7 +361,6 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
     
                     
     train_dataset = cfg.CustomDataset(train_df, cfg, transform=train_transform, mode="train")
-    # valid_dataset = cfg.CustomDataset(val_df, cfg, transform=val_transform, mode="val")  
     valid_dataset_ctrl = cfg.CustomDataset(val_df_contrail, cfg, transform=val_transform, mode="val")      
 
     train_loader = DataLoader(
@@ -413,19 +371,10 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
         pin_memory = True, 
         drop_last = True,
     )
-
-    # valid_loader = DataLoader(
-    #     valid_dataset, 
-    #     batch_size = cfg.training.batch_size * 2, 
-    #     shuffle = False, 
-    #     num_workers = cfg.environment.num_workers, 
-    #     pin_memory = True, 
-    #     drop_last = False
-    # )
     
     valid_loader_ctrl = DataLoader(
         valid_dataset_ctrl, 
-        batch_size = cfg.training.batch_size * 2, 
+        batch_size = 100, # cfg.training.batch_size, 
         shuffle = False, 
         num_workers = cfg.environment.num_workers, 
         pin_memory = True, 
@@ -440,9 +389,14 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
         load_checkpoint(cfg, model)
     model.to(cfg.device)
 
+    # print(model)
+    # freeze_encoder(model)
+    # summary(model.module.cuda(), (3,224,224)) #prints around 500k trainable params
+
+    # exit()
     swa_model = AveragedModel(model, device=cfg.device, use_buffers=True)
     swa_lr = 1.0e-4
-    swa_start = 0
+    swa_start = cfg.training.swa_start #int(cfg.training.epochs / 2)
     
     # init optimizer and scheduler
     optimizer = optim.Adam(model.parameters(), **config['Adam'])
@@ -476,10 +430,7 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
         else:
             model_to_eval = model
         
-        # val_loss, val_scores = valid_one_epoch(cfg, model, optimizer, criterion, valid_loader)    
         val_loss_ctrl, val_scores_ctrl, val_ensemble_ctrl = valid_one_epoch(cfg, model_to_eval, optimizer, criterion, valid_loader_ctrl)    
-
-        # val_dice, val_dice_ctrl = val_scores[0], val_scores_ctrl[0]
         val_dice_ctrl = val_scores_ctrl[0]
         
         if config['lr_scheduler_name']=='ReduceLROnPlateau' and not epoch >= swa_start:
@@ -487,19 +438,6 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
         elif config['lr_scheduler_name']=='CosineAnnealingLR' and not epoch >= swa_start:
             scheduler.step()
         
-        
-        # # deep copy the model
-        # if val_dice >= best_dice:
-        #     cfg.logger.info(f"Fold {cfg.dataset.fold} - Epoch {epoch} - Valid Dice Score Improved ({best_dice:0.4f} ---> {val_dice:0.4f})")
-        #     best_dice = val_dice
-        #     model_save_pth = ""
-        #     if cfg.dataset.fold != -1:
-        #         model_save_pth = f"{cfg.output_dir}/checkpoint_dice_fold{cfg.dataset.fold}.pth"
-        #     else:
-        #         model_save_pth = f"{cfg.output_dir}/checkpoint_dice.pth"  
-        #     ## calculate and save statistics
-        #     torch.save( {'model': model.state_dict()}, model_save_pth)   
-            
             
         # deep copy the model
         if val_dice_ctrl >= best_dice_ctrl:
@@ -518,28 +456,7 @@ def train_loop(train_df, val_df, val_df_contrail, cfg, config):
             else:
                 model_save_pth = f"{cfg.output_dir}/checkpoint_dice_ctrl.pth"  
             ## calculate and save statistics
-            torch.save({'model': model_state_dict}, model_save_pth)   
-            
-            
-            
-                # deep copy the model
-        if val_ensemble_ctrl >= best_ensemble_ctrl:
-            if epoch >= swa_start:
-                model_state_dict = swa_model.state_dict()
-                del model_state_dict['n_averaged']
-                model_state_dict = {k.replace('module.module.', 'module.'): v for k, v in model_state_dict.items()}
-            else:
-                model_state_dict = model.state_dict()
-
-            cfg.logger.info(f"Fold {cfg.dataset.fold} - Epoch {epoch} - Ensemble CTRL Score Improved ({best_ensemble_ctrl:0.4f} ---> {val_ensemble_ctrl:0.4f})")
-            best_ensemble_ctrl = val_ensemble_ctrl
-            model_save_pth = ""
-            if cfg.dataset.fold != -1:
-                model_save_pth = f"{cfg.output_dir}/checkpoint_dice_ensemble_best{cfg.dataset.fold}.pth"
-            else:
-                model_save_pth = f"{cfg.output_dir}/checkpoint_dice_ctrl_ensemble_best.pth"  
-            ## calculate and save statistics
-            torch.save({'model': model_state_dict}, model_save_pth)   
+            torch.save({'model': model_state_dict}, model_save_pth)    
             
         
     cfg.logger.info(f"Fold {cfg.dataset.fold} - Dice CV ({best_dice_ctrl:0.4f})")
@@ -619,147 +536,20 @@ if __name__ == "__main__":
         train_df = df.loc[df.fold != fold].reset_index(drop=True)
         val_df = df.loc[df.fold == fold].reset_index(drop=True)
         print(df.shape, train_df.shape, val_df.shape)
-        
-        
-        if hasattr(cfg.training, 'use_pl') and cfg.training.use_pl:
-            if hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v1":
-                df_tr_s1_3 = pd.read_csv(f'../input/pseudo/train_data_3.csv') # s1
-                df_tr_s1_5 = pd.read_csv(f'../input/pseudo/train_data_5.csv') # s1
-
-                df_tr_s1_3 = df_tr_s1_3.loc[df_tr_s1_3.fold != fold].reset_index(drop=True)
-                df_tr_s1_5 = df_tr_s1_5.loc[df_tr_s1_5.fold != fold].reset_index(drop=True)
-
-                df_tr_s1_3['label'] = df_tr_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
-                df_tr_s1_5['label'] = df_tr_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
-
-                
-                df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_3.csv') # s1
-                df_val_s1_5 = pd.read_csv(f'../input/pseudo/validation_data_5.csv') # s1
-
-                df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
-                df_val_s1_5['label'] = df_val_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_5fold_s1.npy")
-
-                train_df = pd.concat([
-                    train_df, df_tr_s1_3, df_val_s1_5, df_val_s1_3, df_val_s1_5
-                ]).reset_index(drop=True) 
-            elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v2":
-                df_val_s1_2 = pd.read_csv(f'../input/pseudo/validation_data_2.csv') # s1
-                df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_3.csv') # s1
-                df_val_s1_5 = pd.read_csv(f'../input/pseudo/validation_data_5.csv') # s1
-                df_val_s1_6 = pd.read_csv(f'../input/pseudo/validation_data_6.csv') # s1
-                
-                df_val_s1_2['label'] = df_val_s1_2['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
-                df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
-                df_val_s1_5['label'] = df_val_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
-                df_val_s1_6['label'] = df_val_s1_6['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
-                
-                
-                train_df = pd.concat([
-                    train_df, df_val_s1_2, df_val_s1_3, df_val_s1_5, df_val_s1_6
-                ]).reset_index(drop=True) 
-                
-            elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v3":
-                
-                df_tr_s1_3 = pd.read_csv(f'../input/pseudo/train_data_3.csv') # s1
-                df_tr_s1_5 = pd.read_csv(f'../input/pseudo/train_data_5.csv') # s1
-                
-                
-                df_val_s1_2 = pd.read_csv(f'../input/pseudo/validation_data_2.csv') # s1
-                df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_3.csv') # s1
-                df_val_s1_5 = pd.read_csv(f'../input/pseudo/validation_data_5.csv') # s1
-                df_val_s1_6 = pd.read_csv(f'../input/pseudo/validation_data_6.csv') # s1
-                
-                df_tr_s1_3['label'] = df_tr_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
-                df_tr_s1_5['label'] = df_tr_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
-                
-                
-                df_val_s1_2['label'] = df_val_s1_2['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
-                df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
-                df_val_s1_5['label'] = df_val_s1_5['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
-                df_val_s1_6['label'] = df_val_s1_6['label'].apply(lambda x: f"{x.split('.npy')[0]}_684cv_687lb.npy")
-                
-                
-                # train_df = pd.concat([
-                #     train_df, df_tr_s1_3, df_tr_s1_5, df_val_s1_2, df_val_s1_3, df_val_s1_5, df_val_s1_6
-                # ]).reset_index(drop=True) 
-                
-                train_df = pd.concat([
-                    train_df, df_tr_s1_3, df_val_s1_3, df_val_s1_5
-                ]).reset_index(drop=True) 
-                
-                
-                
-            elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v4":
-                df_tr_s1_3 = pd.read_csv(f'../input/pseudo/train_data_3.csv') # s1
-                df_tr_s1_3['label'] = df_tr_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
-                train_df = pd.concat([
-                    train_df, df_tr_s1_3
-                ]).reset_index(drop=True) 
-                
-                
-            elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v5":
-                df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_3.csv') # s1
-                df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
-                train_df = pd.concat([
-                   df_val_s1_3 #train_df, df_tr_s1_3
-                ]).reset_index(drop=True) 
-                
-            elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v6":
-                df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_2.csv') # s1
-                df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
-                train_df = pd.concat([
-                   df_val_s1_3 #train_df, df_tr_s1_3
-                ]).reset_index(drop=True) 
-                
-            elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v7":
-                df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_1.csv') # s1
-                df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
-                train_df = pd.concat([
-                   df_val_s1_3 #train_df, df_tr_s1_3
-                ]).reset_index(drop=True) 
-                
-            # elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v8":
-            #     df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_0.csv') # s1
-            #     df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
-            #     train_df = pd.concat([
-            #        df_val_s1_3 #train_df, df_tr_s1_3
-            #     ]).reset_index(drop=True) 
-                
-                
-            elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v8":
-                # df_val_s1_0 = pd.read_csv(f'../input/pseudo/validation_data_0.csv') # s1
-                df_val_s1_1 = pd.read_csv(f'../input/pseudo/validation_data_1.csv') # s1
-                df_val_s1_2 = pd.read_csv(f'../input/pseudo/validation_data_2.csv') # s1
-                df_val_s1_3 = pd.read_csv(f'../input/pseudo/validation_data_3.csv') # s1
-
-                # df_val_s1_0['label'] = df_val_s1_0['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
-                df_val_s1_1['label'] = df_val_s1_1['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
-                df_val_s1_2['label'] = df_val_s1_2['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
-                df_val_s1_3['label'] = df_val_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
  
-                train_df = pd.concat([
-                    train_df, df_val_s1_1, df_val_s1_2, df_val_s1_3
-                ]).reset_index(drop=True) 
-                
-                
-            elif hasattr(cfg.training, "pl_version") and cfg.training.pl_version == "v9":
-                df_tr_s1_3 = pd.read_csv(f'../input/pseudo/train_data_3.csv') # s1
-                df_tr_s1_3['label'] = df_tr_s1_3['label'].apply(lambda x: f"{x.split('.npy')[0]}_6811_702lb.npy")
-                train_df = pd.concat([
-                    train_df , df_tr_s1_3
-                ]).reset_index(drop=True) 
- 
- 
-        print(train_df.shape)
-        # print(train_df['class'].value_counts())
-        
         train_df = pd.concat([train_df, val_df]).reset_index(drop=True) #.head(500)
         train_df = train_df.loc[~train_df['id'].isin(train_dups)].reset_index(drop=True)
         
-        # train_df = train_df.head(500)
-        # filter scores < 0.5
-        train_df = train_df.loc[train_df.scores > 0.5].reset_index(drop=True)
-        
-        
+        df1 = train_df.loc[train_df.scores > 0.5].reset_index(drop=True)
+        df2 = train_df.loc[train_df.scores <= 0.5].reset_index(drop=True)
+        df3 = df2.loc[df2['class'] == 0].reset_index(drop=True)
+        df2 = df2.loc[df2['class'] == 1].reset_index(drop=True)                
+ 
+        if hasattr(cfg.training, "train_label") and cfg.training.train_label == "v1":
+            df2['label'] = df2.image.apply(lambda x:  f"labels_many/train_data/{x.split('/')[-2]}/label_many.npy")
+            train_df = pd.concat([df1, df2]).reset_index(drop=True) #.head(500)      
+        else:
+            train_df = df1.reset_index(drop=True)
+                            
         val_df = val_df_contrail
         _ = train_loop(train_df, val_df, val_df_contrail, cfg, config)

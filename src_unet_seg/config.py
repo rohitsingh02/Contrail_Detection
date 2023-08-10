@@ -13,7 +13,6 @@ def get_config():
             'efficientnet-b7-512': 24,
             'timm-efficientnet-b8-256': 68,
             'timm-efficientnet-l2-256': 18
-              
         },
               
                            
@@ -41,7 +40,7 @@ def get_config():
                 'epochs':25,
             },
             'CosineAnnealingLR':{
-                'step_size_min':1e-4,
+                'step_size_min': 1e-5, #1e-4, #1e-5,
                 't0': 49, #49,
                 'tmult':1,
                 'curr_epoch':-1,

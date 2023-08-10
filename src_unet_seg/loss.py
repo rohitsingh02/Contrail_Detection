@@ -5,6 +5,8 @@ import torch.nn as nn
 import numpy as np
 import torch
 from torch.autograd import Variable
+from torch.nn.modules.loss import _Loss
+import math
 
 
 
@@ -87,3 +89,49 @@ def loss_fn_s2(y_pred, y_true):
 
 def loss_fn_s3(y_pred, y_true):
     return DiceLoss(y_pred, y_true)
+
+
+def wing_loss(output: torch.Tensor, target: torch.Tensor, width=5, curvature=0.5, reduction="mean"):
+    """
+    https://arxiv.org/pdf/1711.06753.pdf
+    :param output:
+    :param target:
+    :param width:
+    :param curvature:
+    :param reduction:
+    :return:
+    """
+    diff_abs = (target - output).abs()
+    loss = diff_abs.clone()
+
+    idx_smaller = diff_abs < width
+    idx_bigger = diff_abs >= width
+
+    loss[idx_smaller] = width * torch.log(1 + diff_abs[idx_smaller] / curvature)
+
+    C = width - width * math.log(1 + width / curvature)
+    loss[idx_bigger] = loss[idx_bigger] - C
+
+    if reduction == "sum":
+        loss = loss.sum()
+
+    if reduction == "mean":
+        loss = loss.mean()
+
+    return loss
+
+
+class WingLoss(_Loss):
+    def __init__(self, width=5, curvature=0.5, reduction="mean"):
+        super(WingLoss, self).__init__(reduction=reduction)
+        self.width = width
+        self.curvature = curvature
+
+    def forward(self, prediction, target):
+        return wing_loss(prediction, target, self.width, self.curvature, self.reduction)
+
+
+def wingloss(y_pred, y_true):
+    loss = WingLoss()
+    return loss(y_pred, y_true)
+    
